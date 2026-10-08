@@ -63,6 +63,14 @@ th{background:var(--bg);position:sticky;top:0;font-size:0.72rem;text-transform:u
   border:1px solid var(--border);border-radius:6px;padding:8px}
 .log div{color:var(--sub)}
 .hint{font-size:0.72rem;color:var(--sub);margin-top:4px}
+.banner{display:none;background:var(--panel);border:1px solid var(--bad);border-left:4px solid var(--bad);
+  border-radius:8px;padding:12px 14px;font-size:0.82rem;margin-bottom:14px}
+.banner.show{display:block}
+.banner pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;
+  font-size:0.72rem;overflow-x:auto;white-space:pre}
+.chip{display:inline-block;padding:3px 10px;border-radius:999px;border:1px solid var(--border);
+  background:var(--bg);color:var(--sub);font-size:0.72rem;cursor:pointer;margin:2px 4px 2px 0}
+.chip.active{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
 footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
 </style>
 </head>
@@ -77,6 +85,27 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
     Respect the engagement's rate limits and <code>robots.txt</code>.
   </div>
 
+  <div class="banner" id="corsBanner">
+    <b>⚠ Direct requests are being blocked by the browser's CORS policy.</b>
+    This target doesn't send <code>Access-Control-Allow-Origin</code> headers, so a browser page cannot read status codes
+    or bodies from it cross-origin — this is a hard browser security rule, not a bug in the scan logic, and it's why the
+    run auto-stopped instead of producing 1,000 identical failed rows. To get real directory-busting results you need a
+    tiny proxy you control and are authorized to route this engagement's traffic through. A minimal one (Cloudflare Worker, free tier):
+    <pre>export default {
+  async fetch(req) {
+    const target = new URL(req.url).searchParams.get('url');
+    if (!target) return new Response('missing url', {status:400});
+    const r = await fetch(target, {redirect:'follow'});
+    const body = await r.arrayBuffer();
+    return new Response(body, {status:r.status, headers:{
+      'Access-Control-Allow-Origin':'*',
+      'content-type': r.headers.get('content-type')||'text/plain'
+    }});
+  }
+}</pre>
+    Deploy that, paste its URL + <code>?url=</code> into the "CORS proxy prefix" field below, and re-run.
+  </div>
+
   <div class="grid">
     <div class="card">
       <label>Target URL(s) — one per line</label>
@@ -84,14 +113,16 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
 
       <label>CORS proxy prefix (optional)</label>
       <input id="proxy" type="text" placeholder="e.g. https://your-own-proxy/?url=">
-      <div class="hint">Browsers block most cross-origin response reading (CORS). Point this at a proxy you control and are authorized to use for the engagement, or run this file locally with a relaxed-CORS dev profile. Without a proxy, results are best-effort (reachability/timing only on opaque responses).</div>
+      <div class="hint">Required for real results against most targets: browsers block cross-origin status/body reads entirely (CORS) unless the target sends permissive headers. Point this at a proxy you control and are authorized to route this engagement through — see the warning box that appears below if a scan gets blocked, it includes a 10-line proxy you can deploy in minutes.</div>
 
-      <label>Wordlist — one path per line (quick/manual entries)</label>
-      <textarea id="wordlist" style="min-height:90px"></textarea>
+      <label>Built-in wordlist: <b id="builtinCount">—</b> curated + generated paths — always included, no upload required</label>
 
-      <label>Upload wordlist file(s) — SecLists etc. (.txt, any size)</label>
+      <label>Extra manual paths (optional, one per line)</label>
+      <textarea id="wordlist" style="min-height:60px" placeholder="site-specific paths to add on top of the built-in list"></textarea>
+
+      <label>Upload wordlist file(s) — SecLists etc. (.txt, any size, optional)</label>
       <input id="wordlistFile" type="file" accept=".txt" multiple>
-      <div class="hint" id="wordlistStatus">No file loaded — using the built-in starter list above. Grab real SecLists lists (raft-large-words.txt, directory-list-2.3-medium.txt, api/api-endpoints.txt, etc.) from github.com/danielmiessler/SecLists and drop them here; uploaded files are merged with the textarea and deduped, however many entries they contain.</div>
+      <div class="hint" id="wordlistStatus">Nothing uploaded — running on the built-in list (and any manual paths above). For an exhaustive run, grab real SecLists lists (raft-large-words.txt, directory-list-2.3-medium.txt, api/api-endpoints.txt, etc.) from github.com/danielmiessler/SecLists and drop them here; they merge with the built-in list and dedupe automatically.</div>
     </div>
 
     <div class="card">
@@ -102,7 +133,7 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
       </div>
       <label><input id="recursive" type="checkbox" style="width:auto;display:inline-block;margin-right:6px">Also probe common API/discovery files (swagger.json, robots.txt, sitemap.xml, .env, .git/config)</label>
       <label>Max paths per target (cap — set high for a full SecLists run)</label>
-      <input id="maxpaths" type="number" value="500" min="10" max="200000">
+      <input id="maxpaths" type="number" value="1500" min="10" max="200000">
       <div class="hint">At 5 rps this is roughly seconds-per-100-paths × count — a 10k-line list at 5 rps is ~30+ min per target. Raise RPS/concurrency carefully and only within what the engagement's rate-limit scope allows.</div>
       <div class="stats" id="stats">
         <div class="stat"><span>Tested</span><b id="s-tested">0</b></div>
@@ -127,6 +158,13 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
 
   <div class="card">
     <label style="margin-top:0">Results</label>
+    <div style="margin-bottom:8px">
+      <span class="chip active" data-filter="interesting">Interesting (default)</span>
+      <span class="chip" data-filter="all">All</span>
+      <span class="chip" data-filter="live">Live only</span>
+      <span class="chip" data-filter="errors">Errors only</span>
+    </div>
+    <div class="hint" style="margin-bottom:8px">"Interesting" hides soft-404-filtered noise and collapses repeated identical errors so a 1,000-path scan doesn't bury real findings.</div>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Target</th><th>Path</th><th>Status</th><th>Len</th><th>Time ms</th><th>Via</th><th>Tech / Notes</th></tr></thead>
@@ -139,25 +177,69 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
 </div>
 
 <script>
-const DEFAULT_WORDLIST = [
-"admin","administrator","login","logout","dashboard","api","api/v1","api/v2","v1","v2",
-"config","config.json","configuration","settings","backup","backup.zip","backup.sql",
-".env",".env.local",".env.production",".git/config",".git/HEAD",".htaccess","web.config",
-"robots.txt","sitemap.xml","swagger.json","swagger.yaml","openapi.json","api-docs","graphql",
-"health","healthz","status","ping","version","info","debug","test","dev","staging",
-"upload","uploads","files","download","downloads","assets","static","media","images",
-"users","user","accounts","account","register","signup","signin","reset-password",
-"forgot-password","password","token","oauth","auth","authenticate","session","sessions",
-"wp-admin","wp-login.php","wp-content","wp-json","phpmyadmin","adminer","console",
-"docs","documentation","readme","README.md","changelog","CHANGELOG.md","license",
-"server-status","server-info","actuator","actuator/health","metrics","trace",
-"api/users","api/login","api/auth","api/health","api/status","api/config",
-"backup/","old/","tmp/","temp/","private/","internal/","hidden/","secret/",
-".well-known/security.txt",".DS_Store","crossdomain.xml","clientaccesspolicy.xml"
+// Curated, standalone high-value paths (directories, files, no extension-mutation needed)
+const CURATED_BASE = [
+"admin","administrator","login","logout","dashboard","api","api/v1","api/v2","api/v3","v1","v2","v3",
+".env",".env.local",".env.production",".env.dev",".git/config",".git/HEAD",".git/",".svn/",".hg/",
+".htaccess","web.config","web.config.bak","robots.txt","sitemap.xml","humans.txt","crossdomain.xml",
+"clientaccesspolicy.xml",".well-known/security.txt",".well-known/openid-configuration",
+"swagger.json","swagger.yaml","swagger-ui.html","openapi.json","openapi.yaml","api-docs","api/swagger.json",
+"graphql","graphiql","health","healthz","livez","readyz","status","ping","version","info",
+"debug","test","dev","staging","uat","qa","sandbox",
+"upload","uploads","download","downloads","assets","static","media","images","public",
+"users","user","accounts","account","register","signup","signin","reset-password","forgot-password",
+"oauth","oauth2","authenticate","sso","callback","session","sessions","token","refresh-token",
+"wp-admin","wp-login.php","wp-content","wp-json","wp-config.php","wp-config.php.bak","xmlrpc.php",
+"phpmyadmin","pma","adminer","adminer.php","console","actuator","actuator/health","actuator/env",
+"actuator/beans","actuator/mappings","actuator/metrics","actuator/heapdump","metrics","trace",
+"prometheus","grafana","kibana","elasticsearch","solr/admin","jenkins","gitlab","jira","confluence",
+"docs","documentation","readme","README.md","changelog","CHANGELOG.md","license","LICENSE",
+"server-status","server-info","nginx_status","cgi-bin/","elmah.axd","trace.axd","_profiler",
+"docker-compose.yml","docker-compose.yaml","Dockerfile",".dockerignore","package.json","package-lock.json",
+"composer.json","composer.lock",".npmrc","requirements.txt","Gemfile","Gemfile.lock","manage.py",
+"vendor/","node_modules/","bower.json","yarn.lock","config.php","configuration.php",
+"local.settings.json","appsettings.json","appsettings.Development.json","web.xml","WEB-INF/web.xml",
+"META-INF/MANIFEST.MF",".ssh/id_rsa",".aws/credentials",".DS_Store","Thumbs.db","error_log","access_log",
+"phpinfo.php","info.php","test.php","shell.php","cmd.php","id_rsa","id_rsa.pub","authorized_keys",
+"backup/","old/","tmp/","temp/","private/","internal/","hidden/","secret/","data/","db/","sql/"
 ];
+
+// Mutable base words combined with common fuzzing extensions — this is what pushes the
+// built-in list past 1,000 unique entries without depending on any upload.
+const MUTABLE_BASE = [
+"admin","backup","config","login","index","home","main","app","application","api","db",
+"database","dump","export","import","old","new","test","dev","staging","private","secret",
+"secrets","upload","download","file","files","report","reports","data","log","logs","cache",
+"session","sessions","token","tokens","key","keys","credentials","password","passwords","env",
+"settings","system","core","service","gateway","internal","debug","console","panel","portal",
+"manage","management","account","accounts","profile","profiles","payment","payments","billing",
+"invoice","invoices","order","orders","cart","checkout","search","docs","doc","users","user",
+"customer","customers","client","clients","employee","employees","staff","member","members",
+"install","setup","migrate","migration","migrations","seed","seeds","init","deploy","release",
+"build","dist","src","server","client-config","site","web","www","app-config","auth","login-api",
+"register","signup","upload-file","download-file","export-data","import-data","archive","archives"
+];
+const MUTATION_EXTENSIONS = [
+"php","asp","aspx","jsp","json","xml","bak","old","zip","tar.gz","gz","rar","7z","sql","sql.gz",
+"log","yml","yaml","txt","config","conf","ini","inc","swp","orig","save","copy","~"
+];
+
+function buildBuiltInWordlist(){
+  const set = new Set(CURATED_BASE);
+  for(const b of MUTABLE_BASE){
+    set.add(b);
+    set.add(b+'/');
+    for(const ext of MUTATION_EXTENSIONS) set.add(`${b}.${ext}`);
+  }
+  return [...set];
+}
+const BUILT_IN_WORDLIST = buildBuiltInWordlist();
 const EXTRA_API = ["swagger.json","openapi.json","api-docs","graphql","robots.txt","sitemap.xml",".env",".git/config"];
 
-document.getElementById('wordlist').value = DEFAULT_WORDLIST.join("\n");
+document.addEventListener('DOMContentLoaded', ()=>{
+  const el = document.getElementById('builtinCount');
+  if(el) el.textContent = BUILT_IN_WORDLIST.length.toLocaleString();
+});
 
 const $ = id => document.getElementById(id);
 const logEl = $('log'), rowsEl = $('rows'), barEl = $('bar');
@@ -192,14 +274,21 @@ async function timedFetch(url, timeoutMs){
   const to = setTimeout(()=>ac.abort(), timeoutMs);
   const t0 = performance.now();
   try{
-    const res = await fetch(url, {signal: ac.signal, redirect: 'follow'});
+    const res = await fetch(url, {signal: ac.signal, redirect: 'follow', mode:'cors'});
     const text = await res.text().catch(()=> '');
+    clearTimeout(to);
     return { ok:true, status: res.status, length: text.length, body: text,
       headers: res.headers, time: Math.round(performance.now()-t0) };
   }catch(e){
-    return { ok:false, error: e.name === 'AbortError' ? 'timeout' : (e.message||'network error'),
+    clearTimeout(to);
+    // A generic TypeError here almost always means the browser's CORS policy blocked the
+    // read (no Access-Control-Allow-Origin from the target) — not a dead target. Label it
+    // as such instead of surfacing the raw, misleading "NetworkError" text.
+    const isCors = e.name === 'TypeError';
+    return { ok:false, corsBlocked:isCors,
+      error: e.name === 'AbortError' ? 'timeout' : (isCors ? 'CORS-blocked (needs proxy)' : (e.message||'unreachable')),
       time: Math.round(performance.now()-t0) };
-  }finally{ clearTimeout(to); }
+  }
 }
 
 function detectTech(headers, body){
@@ -220,15 +309,63 @@ function detectTech(headers, body){
   return [...new Set(tech)];
 }
 
+let currentFilter = 'interesting';
+let errorCollapseCount = {}; // per target+error, how many times already rendered
+const ERROR_COLLAPSE_LIMIT = 3;
+
+function rowCategory(r){
+  if(r.error) return 'error';
+  if(r.softFiltered) return 'soft';
+  return 'live';
+}
+
 function addRow(r){
   results.push(r);
+  const cat = rowCategory(r);
+
+  if(cat === 'error'){
+    const key = r.target + '|' + r.error;
+    errorCollapseCount[key] = (errorCollapseCount[key]||0) + 1;
+    if(errorCollapseCount[key] > ERROR_COLLAPSE_LIMIT){
+      // still counted in stats/export, just not re-rendered as its own row past the limit
+      if(errorCollapseCount[key] === ERROR_COLLAPSE_LIMIT+1){
+        const tr = document.createElement('tr');
+        tr.dataset.cat = 'error';
+        tr.innerHTML = `<td colspan="7" style="color:var(--sub);font-style:italic">… further "${r.error}" results for ${r.target} are collapsed (still counted above, see Export for full data)</td>`;
+        applyFilterToRow(tr);
+        rowsEl.appendChild(tr);
+      }
+      return;
+    }
+  }
+
   const tr = document.createElement('tr');
+  tr.dataset.cat = cat;
   const tagClass = r.status>=200 && r.status<300 ? 'tag-ok' : (r.status>=400 ? 'tag-bad' : 'tag-warn');
   tr.innerHTML = `<td>${r.target}</td><td>/${r.path}</td>
     <td><span class="tag ${tagClass}">${r.status ?? r.error}</span></td>
     <td>${r.length ?? '-'}</td><td>${r.time}</td><td>${r.via}</td><td>${r.tech.join(', ')}</td>`;
+  applyFilterToRow(tr);
   rowsEl.appendChild(tr);
 }
+
+function applyFilterToRow(tr){
+  const cat = tr.dataset.cat;
+  let show = true;
+  if(currentFilter === 'interesting') show = cat !== 'soft';
+  else if(currentFilter === 'live') show = cat === 'live';
+  else if(currentFilter === 'errors') show = cat === 'error';
+  tr.style.display = show ? '' : 'none';
+}
+
+document.querySelectorAll('.chip').forEach(chip=>{
+  chip.addEventListener('click', ()=>{
+    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
+    chip.classList.add('active');
+    currentFilter = chip.dataset.filter;
+    rowsEl.querySelectorAll('tr').forEach(applyFilterToRow);
+  });
+});
 
 function updateStats(){
   $('s-tested').textContent = results.length;
@@ -242,24 +379,34 @@ async function rateLimiter(rps){
   return () => new Promise(r=>setTimeout(r, base + Math.random()*base*0.5));
 }
 
+const CORS_STOP_THRESHOLD = 6; // consecutive CORS-blocked hits before we stop wasting requests
+
 async function scanTarget(target, wordlist, opts){
   log(`Baselining ${target} ...`);
   const proxy = opts.proxy;
   const bogus = `__nonexistent_${Math.random().toString(36).slice(2,10)}__`;
   const baseRes = await timedFetch(buildUrl(target, bogus, proxy), opts.timeout);
   const baseline = baseRes.ok ? { status: baseRes.status, length: baseRes.length, hash: simpleHash(baseRes.body) } : null;
-  if(baseline) log(`Baseline for ${target}: status ${baseline.status}, len ${baseline.length}`, 'sub');
-  else log(`Baseline fetch failed for ${target}: ${baseRes.error} (continuing — no proxy may mean opaque responses)`, 'warn');
+
+  if(baseline){
+    log(`Baseline for ${target}: status ${baseline.status}, len ${baseline.length}`, 'sub');
+  } else if(baseRes.corsBlocked && !proxy){
+    log(`${target} blocked the baseline request via CORS — direct, proxy-less scanning cannot read status codes from this target.`, 'bad');
+    $('corsBanner').classList.add('show');
+    return; // don't burn the whole wordlist on guaranteed failures
+  } else {
+    log(`Baseline fetch failed for ${target}: ${baseRes.error}`, 'warn');
+  }
 
   const wait = await rateLimiter(opts.rps);
   const queue = wordlist.slice(0, opts.maxpaths);
-  let idx = 0, active = 0;
+  let idx = 0, active = 0, corsStreak = 0, stoppedForCors = false;
   const total = queue.length;
 
   return new Promise(resolve => {
-    function maybeDone(){ if(idx>=total && active===0) resolve(); }
+    function maybeDone(){ if((idx>=total && active===0) || stoppedForCors){ resolve(); } }
     function next(){
-      if(!running){ resolve(); return; }
+      if(!running || stoppedForCors){ maybeDone(); return; }
       if(idx>=total){ maybeDone(); return; }
       const path = queue[idx++]; active++;
       (async ()=>{
@@ -268,15 +415,22 @@ async function scanTarget(target, wordlist, opts){
         const res = await timedFetch(url, opts.timeout);
         let r;
         if(!res.ok){
+          corsStreak = res.corsBlocked ? corsStreak+1 : 0;
           r = { target, path, status:null, error:res.error, length:null, time:res.time,
                 via: proxy?'proxy':'direct', tech:[], live:false, softFiltered:false };
+          if(!proxy && corsStreak>=CORS_STOP_THRESHOLD && !stoppedForCors){
+            stoppedForCors = true;
+            log(`${target}: ${CORS_STOP_THRESHOLD} consecutive CORS blocks — stopping this target early instead of looping through the rest of the list. Add a proxy to get real results.`, 'bad');
+            $('corsBanner').classList.add('show');
+          }
         } else {
+          corsStreak = 0;
           const h = simpleHash(res.body);
           const softMatch = baseline && res.status===baseline.status &&
             Math.abs(res.length - baseline.length) < 5 && h===baseline.hash;
           const live = !softMatch && res.status>=200 && res.status<400;
           r = { target, path, status:res.status, length:res.length, time:res.time,
-                via: proxy?'proxy':'direct (opaque-limited)',
+                via: proxy?'proxy':'direct',
                 tech: detectTech(res.headers, res.body),
                 live, softFiltered: !!softMatch };
         }
@@ -314,7 +468,7 @@ $('start').addEventListener('click', async ()=>{
   const targets = $('targets').value.split('\n').map(normalizeTarget).filter(Boolean);
   if(!targets.length){ log('No valid targets.', 'bad'); return; }
   const manual = $('wordlist').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  let wordlist = [...new Set([...manual, ...uploadedWords])];
+  let wordlist = [...new Set([...BUILT_IN_WORDLIST, ...manual, ...uploadedWords])];
   if($('recursive').checked) wordlist = [...new Set([...wordlist, ...EXTRA_API])];
   const opts = {
     proxy: $('proxy').value.trim(),
@@ -324,6 +478,7 @@ $('start').addEventListener('click', async ()=>{
     maxpaths: Math.max(10, parseInt($('maxpaths').value)||150),
   };
   results = []; rowsEl.innerHTML=''; logEl.innerHTML=''; updateStats(); barEl.style.width='0%';
+  errorCollapseCount = {}; $('corsBanner').classList.remove('show');
   running = true; targetsCountRef.n = targets.length;
   $('start').disabled = true; $('stop').disabled = false;
   $('exportJson').disabled = true; $('exportCsv').disabled = true;
