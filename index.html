@@ -87,23 +87,32 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
 
   <div class="banner" id="corsBanner">
     <b>⚠ Direct requests are being blocked by the browser's CORS policy.</b>
-    This target doesn't send <code>Access-Control-Allow-Origin</code> headers, so a browser page cannot read status codes
-    or bodies from it cross-origin — this is a hard browser security rule, not a bug in the scan logic, and it's why the
-    run auto-stopped instead of producing 1,000 identical failed rows. To get real directory-busting results you need a
-    tiny proxy you control and are authorized to route this engagement's traffic through. A minimal one (Cloudflare Worker, free tier):
-    <pre>export default {
-  async fetch(req) {
-    const target = new URL(req.url).searchParams.get('url');
-    if (!target) return new Response('missing url', {status:400});
-    const r = await fetch(target, {redirect:'follow'});
-    const body = await r.arrayBuffer();
-    return new Response(body, {status:r.status, headers:{
-      'Access-Control-Allow-Origin':'*',
-      'content-type': r.headers.get('content-type')||'text/plain'
-    }});
-  }
-}</pre>
-    Deploy that, paste its URL + <code>?url=</code> into the "CORS proxy prefix" field below, and re-run.
+    This is enforced by the browser itself — the target doesn't send <code>Access-Control-Allow-Origin</code>, so no
+    client-side script can read its status codes or bodies cross-origin. No amount of retrying or cleverer fetch logic
+    gets around this; it needs a proxy in the loop. <b>Don't route engagement traffic through a public third-party CORS
+    proxy</b> — that leaks the client's data to a service you don't control. Instead run this tiny proxy on your own
+    machine (stdlib only, nothing to install):
+    <pre>python3 -c "
+import http.server, urllib.request, urllib.parse as up
+class H(http.server.BaseHTTPRequestHandler):
+  def do_GET(self):
+    t = up.parse_qs(up.urlparse(self.path).query).get('url',[None])[0]
+    if not t: self.send_response(400); self.end_headers(); return
+    try:
+      r = urllib.request.urlopen(urllib.request.Request(t, headers={'User-Agent':'VAPT-Scanner/1.0'}), timeout=10)
+      body, status, ctype = r.read(), r.status, r.headers.get('Content-Type','text/plain')
+    except urllib.error.HTTPError as e:
+      body, status, ctype = e.read(), e.code, 'text/plain'
+    except Exception as e:
+      self.send_response(502); self.end_headers(); self.wfile.write(str(e).encode()); return
+    self.send_response(status)
+    self.send_header('Access-Control-Allow-Origin','*'); self.send_header('Content-Type', ctype)
+    self.end_headers(); self.wfile.write(body)
+http.server.HTTPServer(('localhost',8787), H).serve_forever()
+"</pre>
+    Run that, keep it open, then set the proxy field below to <code>http://localhost:8787/?url=</code> and hit
+    <b>Test proxy</b>. (No Python handy? A Cloudflare Worker doing the same relay works too — same shape, just hosted;
+    only use that for public/non-sensitive targets since the request then leaves your machine.)
   </div>
 
   <div class="grid">
@@ -111,9 +120,12 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
       <label>Target URL(s) — one per line</label>
       <textarea id="targets" placeholder="https://example-target.test">https://example.com</textarea>
 
-      <label>CORS proxy prefix (optional)</label>
-      <input id="proxy" type="text" placeholder="e.g. https://your-own-proxy/?url=">
-      <div class="hint">Required for real results against most targets: browsers block cross-origin status/body reads entirely (CORS) unless the target sends permissive headers. Point this at a proxy you control and are authorized to route this engagement through — see the warning box that appears below if a scan gets blocked, it includes a 10-line proxy you can deploy in minutes.</div>
+      <label>CORS proxy prefix</label>
+      <div class="row" style="align-items:center">
+        <input id="proxy" type="text" placeholder="http://localhost:8787/?url=" value="http://localhost:8787/?url=">
+        <button class="btn-ghost" id="testProxy" style="flex:0 0 auto">Test proxy</button>
+      </div>
+      <div class="hint" id="proxyTestResult">Required for real results against most targets — browsers block cross-origin status/body reads unless the target sends permissive CORS headers. Start the local proxy below, then click Test proxy before running a scan.</div>
 
       <label>Built-in wordlist: <b id="builtinCount">—</b> curated + generated paths — always included, no upload required</label>
 
@@ -291,22 +303,79 @@ async function timedFetch(url, timeoutMs){
   }
 }
 
+// Lightweight Wappalyzer-style signature set — our own compact matcher (header / cookie /
+// meta-generator / body-pattern rules), not a copy of Wappalyzer's own large JSON database,
+// which is far too big to embed here. Covers the technologies most relevant to recon.
+const TECH_SIGNATURES = [
+  // CMS / platforms
+  {name:'WordPress', cat:'CMS', body:/wp-content|wp-includes|wordpress/i, meta:/wordpress/i},
+  {name:'Drupal', cat:'CMS', body:/\/sites\/(all|default)\/(modules|themes)/i, header:{h:'x-generator', re:/drupal/i}},
+  {name:'Joomla', cat:'CMS', body:/\/components\/com_|joomla/i},
+  {name:'Magento', cat:'CMS', body:/\/skin\/frontend\/|mage\/cookies|magento/i},
+  {name:'Shopify', cat:'CMS', body:/cdn\.shopify\.com|Shopify\.theme/i, header:{h:'x-shopify-stage'}},
+  {name:'Wix', cat:'CMS', body:/static\.wixstatic\.com|wix\.com/i},
+  {name:'Squarespace', cat:'CMS', body:/squarespace\.com/i},
+  {name:'Ghost', cat:'CMS', meta:/ghost/i, header:{h:'x-ghost-cache-status'}},
+  // JS frameworks
+  {name:'React', cat:'JS Framework', body:/react-dom|data-reactroot|__REACT_DEVTOOLS/i},
+  {name:'Next.js', cat:'JS Framework', body:/__NEXT_DATA__|_next\/static/i},
+  {name:'Vue.js', cat:'JS Framework', body:/__vue__|data-v-app|vue\.js/i},
+  {name:'Nuxt.js', cat:'JS Framework', body:/__NUXT__|_nuxt\//i},
+  {name:'Angular', cat:'JS Framework', body:/ng-version|ng-app|angular\.js/i},
+  {name:'jQuery', cat:'JS Library', body:/jquery(\.min)?\.js/i},
+  {name:'Svelte', cat:'JS Framework', body:/svelte-[a-z0-9]+/i},
+  {name:'Bootstrap', cat:'CSS Framework', body:/bootstrap(\.min)?\.css|class="[^"]*\bcontainer-fluid\b/i},
+  {name:'Tailwind CSS', cat:'CSS Framework', body:/tailwindcss|class="[^"]*\b(flex|grid)-\w+/i},
+  // Backend / language
+  {name:'PHP', cat:'Language', header:{h:'x-powered-by', re:/php/i}, cookie:/PHPSESSID/i},
+  {name:'ASP.NET', cat:'Language', header:{h:'x-powered-by', re:/asp\.net/i}, cookie:/ASP\.NET_SessionId/i},
+  {name:'Laravel', cat:'Framework', cookie:/laravel_session/i, body:/laravel/i},
+  {name:'Django', cat:'Framework', cookie:/csrftoken/i, body:/__django|csrfmiddlewaretoken/i},
+  {name:'Ruby on Rails', cat:'Framework', header:{h:'x-powered-by', re:/phusion passenger|rails/i}, body:/csrf-param.*authenticity_token/i},
+  {name:'Express', cat:'Framework', header:{h:'x-powered-by', re:/express/i}},
+  {name:'Spring', cat:'Framework', cookie:/JSESSIONID/i, header:{h:'x-application-context'}},
+  {name:'Java/JSP', cat:'Language', cookie:/JSESSIONID/i},
+  // Servers / infra
+  {name:'Nginx', cat:'Web Server', header:{h:'server', re:/nginx/i}},
+  {name:'Apache', cat:'Web Server', header:{h:'server', re:/apache/i}},
+  {name:'IIS', cat:'Web Server', header:{h:'server', re:/iis/i}},
+  {name:'Cloudflare', cat:'CDN/WAF', header:{h:'server', re:/cloudflare/i}, body:/just a moment|cloudflare/i},
+  {name:'Akamai', cat:'CDN/WAF', header:{h:'server', re:/akamaighost/i}},
+  {name:'Fastly', cat:'CDN', header:{h:'x-served-by', re:/fastly/i}},
+  {name:'Varnish', cat:'Cache', header:{h:'via', re:/varnish/i}, header2:{h:'x-varnish'}},
+  {name:'AWS CloudFront', cat:'CDN', header:{h:'via', re:/cloudfront/i}, header2:{h:'x-amz-cf-id'}},
+  // Tracking / misc
+  {name:'Google Analytics', cat:'Analytics', body:/google-analytics\.com\/analytics\.js|gtag\(/i},
+  {name:'Google Tag Manager', cat:'Analytics', body:/googletagmanager\.com/i},
+  {name:'reCAPTCHA', cat:'Security', body:/recaptcha/i},
+  {name:'Stripe', cat:'Payments', body:/js\.stripe\.com/i},
+  {name:'Font Awesome', cat:'Fonts', body:/font-?awesome/i},
+  // Challenge / WAF pages worth flagging distinctly
+  {name:'⚠ Challenge/Block page', cat:'WAF', body:/just a moment|access denied|request blocked|attention required/i},
+];
+
 function detectTech(headers, body){
-  const tech = [];
-  if(!headers) return tech;
-  const server = headers.get && headers.get('server');
-  const powered = headers.get && headers.get('x-powered-by');
-  if(server) tech.push(server);
-  if(powered) tech.push(powered);
-  if(body){
-    if(/wp-content|wordpress/i.test(body)) tech.push('WordPress');
-    if(/__NEXT_DATA__/.test(body)) tech.push('Next.js');
-    if(/react-dom|data-reactroot/i.test(body)) tech.push('React');
-    if(/ng-version/i.test(body)) tech.push('Angular');
-    if(/cloudflare/i.test(body)) tech.push('Cloudflare (WAF page?)');
-    if(/just a moment/i.test(body)) tech.push('⚠ Challenge page');
+  const found = [];
+  const getHeader = (h)=> (headers && headers.get) ? (headers.get(h)||'') : '';
+  const cookieHeader = getHeader('set-cookie');
+  const generatorMatch = body ? body.match(/<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)["']/i) : null;
+  const generator = generatorMatch ? generatorMatch[1] : '';
+  const serverHdr = getHeader('server');
+  const poweredHdr = getHeader('x-powered-by');
+  if(serverHdr) found.push(serverHdr);
+  if(poweredHdr) found.push(poweredHdr);
+  if(generator) found.push(generator);
+
+  for(const sig of TECH_SIGNATURES){
+    let hit = false;
+    if(sig.header && getHeader(sig.header.h) && (!sig.header.re || sig.header.re.test(getHeader(sig.header.h)))) hit = true;
+    if(!hit && sig.header2 && getHeader(sig.header2.h)) hit = true;
+    if(!hit && sig.cookie && sig.cookie.test(cookieHeader)) hit = true;
+    if(!hit && sig.meta && sig.meta.test(generator)) hit = true;
+    if(!hit && sig.body && body && sig.body.test(body)) hit = true;
+    if(hit) found.push(`${sig.name}`);
   }
-  return [...new Set(tech)];
+  return [...new Set(found)];
 }
 
 let currentFilter = 'interesting';
@@ -462,6 +531,22 @@ $('wordlistFile').addEventListener('change', async (e)=>{
   uploadedWords = [...merged];
   statusEl.textContent = `Loaded ${uploadedWords.length.toLocaleString()} unique paths from: ${uploadedFileNames.join(', ')}. These are merged with the textarea above and deduped at scan time.`;
   log(`Wordlist file(s) loaded: ${uploadedWords.length.toLocaleString()} unique entries total.`, 'ok');
+});
+
+$('testProxy').addEventListener('click', async ()=>{
+  const proxy = $('proxy').value.trim();
+  const out = $('proxyTestResult');
+  if(!proxy){ out.textContent = 'Enter a proxy URL first.'; out.style.color = 'var(--bad)'; return; }
+  out.textContent = 'Testing…'; out.style.color = 'var(--sub)';
+  const res = await timedFetch(buildUrl('https://example.com', '', proxy), 8000);
+  if(res.ok && res.status){
+    out.textContent = `✓ Proxy is working — got a real status code (${res.status}) back through it. You're good to scan.`;
+    out.style.color = 'var(--ok)';
+    $('corsBanner').classList.remove('show');
+  } else {
+    out.textContent = `✗ Proxy didn't return a usable response (${res.error||'no status'}). Make sure it's running and the URL/path is correct.`;
+    out.style.color = 'var(--bad)';
+  }
 });
 
 $('start').addEventListener('click', async ()=>{
