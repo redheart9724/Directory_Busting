@@ -63,9 +63,11 @@ th{background:var(--bg);position:sticky;top:0;font-size:0.72rem;text-transform:u
   border:1px solid var(--border);border-radius:6px;padding:8px}
 .log div{color:var(--sub)}
 .hint{font-size:0.72rem;color:var(--sub);margin-top:4px}
-.banner{display:none;background:var(--panel);border:1px solid var(--bad);border-left:4px solid var(--bad);
+.banner{background:var(--panel);border:1px solid var(--bad);border-left:4px solid var(--bad);
   border-radius:8px;padding:12px 14px;font-size:0.82rem;margin-bottom:14px}
-.banner.show{display:block}
+.banner-head{display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer}
+.banner-details{display:none;margin-top:10px}
+.banner-details.open{display:block}
 .banner pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;
   font-size:0.72rem;overflow-x:auto;white-space:pre}
 .chip{display:inline-block;padding:3px 10px;border-radius:999px;border:1px solid var(--border);
@@ -76,8 +78,13 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
 </head>
 <body>
 <div class="wrap">
-  <h1>🛰️ Endpoint Fuzzer &amp; Tech Fingerprint</h1>
-  <div class="sub">Client-side recon tool for authorized VAPT engagements — path discovery, soft-404 baselining, lightweight tech fingerprinting.</div>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+    <div>
+      <h1 style="margin-bottom:0">🛰️ Endpoint Fuzzer &amp; Tech Fingerprint</h1>
+      <div class="sub">Client-side recon tool for authorized VAPT engagements — path discovery, soft-404 baselining, lightweight tech fingerprinting.</div>
+    </div>
+    <button class="btn-ghost" id="themeToggle" style="flex:0 0 auto;white-space:nowrap">🌙 Dark</button>
+  </div>
 
   <div class="legal">
     <b>Scope &amp; legality:</b> Only run this against targets you have explicit written authorization to test. This tool performs
@@ -86,13 +93,24 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
   </div>
 
   <div class="banner" id="corsBanner">
-    <b>⚠ Direct requests are being blocked by the browser's CORS policy.</b>
-    This is enforced by the browser itself — the target doesn't send <code>Access-Control-Allow-Origin</code>, so no
-    client-side script can read its status codes or bodies cross-origin. No amount of retrying or cleverer fetch logic
-    gets around this; it needs a proxy in the loop. <b>Don't route engagement traffic through a public third-party CORS
-    proxy</b> — that leaks the client's data to a service you don't control. Instead run this tiny proxy on your own
-    machine (stdlib only, nothing to install):
-    <pre>python3 -c "
+    <div class="banner-head" id="corsBannerHead">
+      <span><b>⚠ Proxy setup</b> — needed before scanning, or results will be CORS-blocked.</span>
+      <span class="btn-ghost" id="corsBannerToggle" style="padding:4px 10px;border-radius:6px">▸ Expand</span>
+    </div>
+    <div class="banner-details" id="corsBannerDetails">
+      This is enforced by the browser itself — the target doesn't send <code>Access-Control-Allow-Origin</code>, so no
+      client-side script can read its status codes or bodies cross-origin. No amount of retrying or cleverer fetch logic
+      gets around this; it needs a proxy in the loop. <b>Don't route engagement traffic through a public third-party CORS
+      proxy</b> — that leaks the client's data to a service you don't control. Instead run this tiny proxy on your own
+      machine (stdlib only, nothing to install — just Python 3, which ships on most Mac/Linux systems):
+      <ol style="margin:8px 0 10px 18px;padding:0">
+        <li>Open a terminal — <b>Terminal</b> on Mac, any terminal on Linux, or <b>Command Prompt / PowerShell</b> on Windows.</li>
+        <li>Click <b>Copy script</b> below, paste it into the terminal, and press Enter.</li>
+        <li>Leave that terminal window open while you scan — it's your proxy, running at <code>http://localhost:8787</code>.</li>
+        <li>Come back here, make sure the proxy field below says <code>http://localhost:8787/?url=</code>, and click <b>Test proxy</b>.</li>
+      </ol>
+      <button class="btn-ghost" id="copyScript" style="margin-bottom:6px">📋 Copy script</button>
+      <pre id="proxyScript">python3 -c "
 import http.server, urllib.request, urllib.parse as up
 class H(http.server.BaseHTTPRequestHandler):
   def do_GET(self):
@@ -110,9 +128,9 @@ class H(http.server.BaseHTTPRequestHandler):
     self.end_headers(); self.wfile.write(body)
 http.server.HTTPServer(('localhost',8787), H).serve_forever()
 "</pre>
-    Run that, keep it open, then set the proxy field below to <code>http://localhost:8787/?url=</code> and hit
-    <b>Test proxy</b>. (No Python handy? A Cloudflare Worker doing the same relay works too — same shape, just hosted;
-    only use that for public/non-sensitive targets since the request then leaves your machine.)
+      <div class="hint">No Python handy? A Cloudflare Worker doing the same relay works too — same shape, just hosted;
+      only use that for public/non-sensitive targets, since the request then leaves your machine.</div>
+    </div>
   </div>
 
   <div class="grid">
@@ -248,7 +266,30 @@ function buildBuiltInWordlist(){
 const BUILT_IN_WORDLIST = buildBuiltInWordlist();
 const EXTRA_API = ["swagger.json","openapi.json","api-docs","graphql","robots.txt","sitemap.xml",".env",".git/config"];
 
+(function initTheme(){
+  let saved = null;
+  try{ saved = localStorage.getItem('fuzzer-theme'); }catch(e){}
+  if(saved === 'dark' || saved === 'light'){
+    document.documentElement.setAttribute('data-theme', saved);
+  }
+})();
+
 document.addEventListener('DOMContentLoaded', ()=>{
+  const btn = document.getElementById('themeToggle');
+  function syncLabel(){
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
+      (!document.documentElement.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    btn.textContent = isDark ? '☀️ Light' : '🌙 Dark';
+  }
+  syncLabel();
+  btn.addEventListener('click', ()=>{
+    const current = document.documentElement.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : (current === 'light' ? 'dark' : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark'));
+    document.documentElement.setAttribute('data-theme', next);
+    try{ localStorage.setItem('fuzzer-theme', next); }catch(e){}
+    syncLabel();
+  });
+
   const el = document.getElementById('builtinCount');
   if(el) el.textContent = BUILT_IN_WORDLIST.length.toLocaleString();
 });
@@ -256,6 +297,15 @@ document.addEventListener('DOMContentLoaded', ()=>{
 const $ = id => document.getElementById(id);
 const logEl = $('log'), rowsEl = $('rows'), barEl = $('bar');
 let running = false, controller = null, results = [];
+
+function setCorsBannerOpen(open){
+  $('corsBannerDetails').classList.toggle('open', open);
+  $('corsBannerToggle').textContent = open ? '▾ Collapse' : '▸ Expand';
+}
+$('corsBannerHead').addEventListener('click', ()=>{
+  const isOpen = $('corsBannerDetails').classList.contains('open');
+  setCorsBannerOpen(!isOpen);
+});
 
 function log(msg, cls){
   const d = document.createElement('div');
@@ -461,7 +511,7 @@ async function scanTarget(target, wordlist, opts){
     log(`Baseline for ${target}: status ${baseline.status}, len ${baseline.length}`, 'sub');
   } else if(baseRes.corsBlocked && !proxy){
     log(`${target} blocked the baseline request via CORS — direct, proxy-less scanning cannot read status codes from this target.`, 'bad');
-    $('corsBanner').classList.add('show');
+    setCorsBannerOpen(true);
     return; // don't burn the whole wordlist on guaranteed failures
   } else {
     log(`Baseline fetch failed for ${target}: ${baseRes.error}`, 'warn');
@@ -490,7 +540,7 @@ async function scanTarget(target, wordlist, opts){
           if(!proxy && corsStreak>=CORS_STOP_THRESHOLD && !stoppedForCors){
             stoppedForCors = true;
             log(`${target}: ${CORS_STOP_THRESHOLD} consecutive CORS blocks — stopping this target early instead of looping through the rest of the list. Add a proxy to get real results.`, 'bad');
-            $('corsBanner').classList.add('show');
+            setCorsBannerOpen(true);
           }
         } else {
           corsStreak = 0;
@@ -533,6 +583,21 @@ $('wordlistFile').addEventListener('change', async (e)=>{
   log(`Wordlist file(s) loaded: ${uploadedWords.length.toLocaleString()} unique entries total.`, 'ok');
 });
 
+$('copyScript').addEventListener('click', async ()=>{
+  const text = $('proxyScript').textContent;
+  const btn = $('copyScript');
+  try{
+    await navigator.clipboard.writeText(text);
+    btn.textContent = '✓ Copied — paste into your terminal';
+  }catch(e){
+    // Clipboard API may be unavailable in this context — fall back to manual select
+    const range = document.createRange(); range.selectNode($('proxyScript'));
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    btn.textContent = '⚠ Select & copy manually (highlighted below)';
+  }
+  setTimeout(()=>{ btn.textContent = '📋 Copy script'; }, 4000);
+});
+
 $('testProxy').addEventListener('click', async ()=>{
   const proxy = $('proxy').value.trim();
   const out = $('proxyTestResult');
@@ -542,7 +607,7 @@ $('testProxy').addEventListener('click', async ()=>{
   if(res.ok && res.status){
     out.textContent = `✓ Proxy is working — got a real status code (${res.status}) back through it. You're good to scan.`;
     out.style.color = 'var(--ok)';
-    $('corsBanner').classList.remove('show');
+    setCorsBannerOpen(false);
   } else {
     out.textContent = `✗ Proxy didn't return a usable response (${res.error||'no status'}). Make sure it's running and the URL/path is correct.`;
     out.style.color = 'var(--bad)';
@@ -563,7 +628,7 @@ $('start').addEventListener('click', async ()=>{
     maxpaths: Math.max(10, parseInt($('maxpaths').value)||150),
   };
   results = []; rowsEl.innerHTML=''; logEl.innerHTML=''; updateStats(); barEl.style.width='0%';
-  errorCollapseCount = {}; $('corsBanner').classList.remove('show');
+  errorCollapseCount = {}; setCorsBannerOpen(false);
   running = true; targetsCountRef.n = targets.length;
   $('start').disabled = true; $('stop').disabled = false;
   $('exportJson').disabled = true; $('exportCsv').disabled = true;
