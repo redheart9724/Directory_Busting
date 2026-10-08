@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Endpoint Fuzzer & Tech Fingerprint</title>
+<style>
+:root{
+  --bg:#f7f8fa; --panel:#ffffff; --border:#dde1e6; --text:#1b1f24; --sub:#5b6472;
+  --accent:#2563eb; --accent-text:#ffffff; --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  box-sizing:border-box;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1115; --panel:#171a21; --border:#2a2f3a; --text:#e7e9ee; --sub:#9aa3b2;
+    --accent:#3b82f6; --accent-text:#0b0d12; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f1115; --panel:#171a21; --border:#2a2f3a; --text:#e7e9ee; --sub:#9aa3b2;
+  --accent:#3b82f6; --accent-text:#0b0d12; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.4}
+.wrap{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:1.3rem;margin:4px 0 2px}
+.sub{color:var(--sub);font-size:0.85rem;margin-bottom:16px}
+.legal{background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--warn);
+  border-radius:8px;padding:10px 14px;font-size:0.82rem;color:var(--sub);margin-bottom:18px}
+.legal b{color:var(--text)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:720px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px}
+label{display:block;font-size:0.78rem;color:var(--sub);margin:8px 0 4px;font-weight:600}
+textarea,input[type=text],input[type=number],select{
+  width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);
+  border-radius:6px;padding:8px 10px;font-family:var(--mono);font-size:0.82rem;resize:vertical
+}
+textarea{min-height:70px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>div{flex:1;min-width:120px}
+button{cursor:pointer;border:none;border-radius:7px;padding:9px 16px;font-size:0.85rem;font-weight:600}
+.btn-primary{background:var(--accent);color:var(--accent-text)}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.stats{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0;font-size:0.82rem}
+.stat b{display:block;font-size:1.2rem}
+.progress{height:8px;border-radius:4px;background:var(--border);overflow:hidden;margin:8px 0}
+.progress>div{height:100%;background:var(--accent);width:0%;transition:width .2s}
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:0.8rem;min-width:720px}
+th,td{padding:6px 10px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap}
+th{background:var(--bg);position:sticky;top:0;font-size:0.72rem;text-transform:uppercase;color:var(--sub)}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:0.7rem;font-weight:700}
+.tag-ok{background:color-mix(in srgb, var(--ok) 20%, transparent);color:var(--ok)}
+.tag-warn{background:color-mix(in srgb, var(--warn) 20%, transparent);color:var(--warn)}
+.tag-bad{background:color-mix(in srgb, var(--bad) 20%, transparent);color:var(--bad)}
+.log{font-family:var(--mono);font-size:0.74rem;max-height:160px;overflow-y:auto;background:var(--bg);
+  border:1px solid var(--border);border-radius:6px;padding:8px}
+.log div{color:var(--sub)}
+.hint{font-size:0.72rem;color:var(--sub);margin-top:4px}
+footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🛰️ Endpoint Fuzzer &amp; Tech Fingerprint</h1>
+  <div class="sub">Client-side recon tool for authorized VAPT engagements — path discovery, soft-404 baselining, lightweight tech fingerprinting.</div>
+
+  <div class="legal">
+    <b>Scope &amp; legality:</b> Only run this against targets you have explicit written authorization to test. This tool performs
+    non-destructive path/content discovery only — no payload injection, no credential brute-forcing, no WAF-evasion logic.
+    Respect the engagement's rate limits and <code>robots.txt</code>.
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <label>Target URL(s) — one per line</label>
+      <textarea id="targets" placeholder="https://example-target.test">https://example.com</textarea>
+
+      <label>CORS proxy prefix (optional)</label>
+      <input id="proxy" type="text" placeholder="e.g. https://your-own-proxy/?url=">
+      <div class="hint">Browsers block most cross-origin response reading (CORS). Point this at a proxy you control and are authorized to use for the engagement, or run this file locally with a relaxed-CORS dev profile. Without a proxy, results are best-effort (reachability/timing only on opaque responses).</div>
+
+      <label>Wordlist — one path per line (quick/manual entries)</label>
+      <textarea id="wordlist" style="min-height:90px"></textarea>
+
+      <label>Upload wordlist file(s) — SecLists etc. (.txt, any size)</label>
+      <input id="wordlistFile" type="file" accept=".txt" multiple>
+      <div class="hint" id="wordlistStatus">No file loaded — using the built-in starter list above. Grab real SecLists lists (raft-large-words.txt, directory-list-2.3-medium.txt, api/api-endpoints.txt, etc.) from github.com/danielmiessler/SecLists and drop them here; uploaded files are merged with the textarea and deduped, however many entries they contain.</div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div><label>Requests / sec</label><input id="rps" type="number" value="5" min="1" max="30"></div>
+        <div><label>Concurrency</label><input id="conc" type="number" value="4" min="1" max="12"></div>
+        <div><label>Timeout (ms)</label><input id="timeout" type="number" value="6000" min="1000" max="20000"></div>
+      </div>
+      <label><input id="recursive" type="checkbox" style="width:auto;display:inline-block;margin-right:6px">Also probe common API/discovery files (swagger.json, robots.txt, sitemap.xml, .env, .git/config)</label>
+      <label>Max paths per target (cap — set high for a full SecLists run)</label>
+      <input id="maxpaths" type="number" value="500" min="10" max="200000">
+      <div class="hint">At 5 rps this is roughly seconds-per-100-paths × count — a 10k-line list at 5 rps is ~30+ min per target. Raise RPS/concurrency carefully and only within what the engagement's rate-limit scope allows.</div>
+      <div class="stats" id="stats">
+        <div class="stat"><span>Tested</span><b id="s-tested">0</b></div>
+        <div class="stat"><span>Live</span><b id="s-live" style="color:var(--ok)">0</b></div>
+        <div class="stat"><span>Soft-404 filtered</span><b id="s-soft" style="color:var(--sub)">0</b></div>
+        <div class="stat"><span>Errors</span><b id="s-err" style="color:var(--bad)">0</b></div>
+      </div>
+      <div class="progress"><div id="bar"></div></div>
+      <div class="btn-row">
+        <button class="btn-primary" id="start">Start scan</button>
+        <button class="btn-ghost" id="stop" disabled>Stop</button>
+        <button class="btn-ghost" id="exportJson" disabled>Export JSON</button>
+        <button class="btn-ghost" id="exportCsv" disabled>Export CSV</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label style="margin-top:0">Live log</label>
+    <div class="log" id="log"></div>
+  </div>
+
+  <div class="card">
+    <label style="margin-top:0">Results</label>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Target</th><th>Path</th><th>Status</th><th>Len</th><th>Time ms</th><th>Via</th><th>Tech / Notes</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer>Client-side tool · results limited by browser CORS unless a proxy is configured · build for authorized testing only</footer>
+</div>
+
+<script>
+const DEFAULT_WORDLIST = [
+"admin","administrator","login","logout","dashboard","api","api/v1","api/v2","v1","v2",
+"config","config.json","configuration","settings","backup","backup.zip","backup.sql",
+".env",".env.local",".env.production",".git/config",".git/HEAD",".htaccess","web.config",
+"robots.txt","sitemap.xml","swagger.json","swagger.yaml","openapi.json","api-docs","graphql",
+"health","healthz","status","ping","version","info","debug","test","dev","staging",
+"upload","uploads","files","download","downloads","assets","static","media","images",
+"users","user","accounts","account","register","signup","signin","reset-password",
+"forgot-password","password","token","oauth","auth","authenticate","session","sessions",
+"wp-admin","wp-login.php","wp-content","wp-json","phpmyadmin","adminer","console",
+"docs","documentation","readme","README.md","changelog","CHANGELOG.md","license",
+"server-status","server-info","actuator","actuator/health","metrics","trace",
+"api/users","api/login","api/auth","api/health","api/status","api/config",
+"backup/","old/","tmp/","temp/","private/","internal/","hidden/","secret/",
+".well-known/security.txt",".DS_Store","crossdomain.xml","clientaccesspolicy.xml"
+];
+const EXTRA_API = ["swagger.json","openapi.json","api-docs","graphql","robots.txt","sitemap.xml",".env",".git/config"];
+
+document.getElementById('wordlist').value = DEFAULT_WORDLIST.join("\n");
+
+const $ = id => document.getElementById(id);
+const logEl = $('log'), rowsEl = $('rows'), barEl = $('bar');
+let running = false, controller = null, results = [];
+
+function log(msg, cls){
+  const d = document.createElement('div');
+  if(cls) d.style.color = `var(--${cls})`;
+  d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+}
+
+function normalizeTarget(u){
+  u = u.trim(); if(!u) return null;
+  if(!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  return u.replace(/\/+$/,'');
+}
+
+function simpleHash(str){
+  let h = 0;
+  for(let i=0;i<str.length;i++){ h = (Math.imul(31,h) + str.charCodeAt(i))|0; }
+  return h;
+}
+
+function buildUrl(target, path, proxy){
+  const full = `${target}/${path.replace(/^\/+/,'')}`;
+  return proxy ? (proxy + encodeURIComponent(full)) : full;
+}
+
+async function timedFetch(url, timeoutMs){
+  const ac = new AbortController();
+  const to = setTimeout(()=>ac.abort(), timeoutMs);
+  const t0 = performance.now();
+  try{
+    const res = await fetch(url, {signal: ac.signal, redirect: 'follow'});
+    const text = await res.text().catch(()=> '');
+    return { ok:true, status: res.status, length: text.length, body: text,
+      headers: res.headers, time: Math.round(performance.now()-t0) };
+  }catch(e){
+    return { ok:false, error: e.name === 'AbortError' ? 'timeout' : (e.message||'network error'),
+      time: Math.round(performance.now()-t0) };
+  }finally{ clearTimeout(to); }
+}
+
+function detectTech(headers, body){
+  const tech = [];
+  if(!headers) return tech;
+  const server = headers.get && headers.get('server');
+  const powered = headers.get && headers.get('x-powered-by');
+  if(server) tech.push(server);
+  if(powered) tech.push(powered);
+  if(body){
+    if(/wp-content|wordpress/i.test(body)) tech.push('WordPress');
+    if(/__NEXT_DATA__/.test(body)) tech.push('Next.js');
+    if(/react-dom|data-reactroot/i.test(body)) tech.push('React');
+    if(/ng-version/i.test(body)) tech.push('Angular');
+    if(/cloudflare/i.test(body)) tech.push('Cloudflare (WAF page?)');
+    if(/just a moment/i.test(body)) tech.push('⚠ Challenge page');
+  }
+  return [...new Set(tech)];
+}
+
+function addRow(r){
+  results.push(r);
+  const tr = document.createElement('tr');
+  const tagClass = r.status>=200 && r.status<300 ? 'tag-ok' : (r.status>=400 ? 'tag-bad' : 'tag-warn');
+  tr.innerHTML = `<td>${r.target}</td><td>/${r.path}</td>
+    <td><span class="tag ${tagClass}">${r.status ?? r.error}</span></td>
+    <td>${r.length ?? '-'}</td><td>${r.time}</td><td>${r.via}</td><td>${r.tech.join(', ')}</td>`;
+  rowsEl.appendChild(tr);
+}
+
+function updateStats(){
+  $('s-tested').textContent = results.length;
+  $('s-live').textContent = results.filter(r=>r.live).length;
+  $('s-soft').textContent = results.filter(r=>r.softFiltered).length;
+  $('s-err').textContent = results.filter(r=>r.error).length;
+}
+
+async function rateLimiter(rps){
+  const base = 1000/rps;
+  return () => new Promise(r=>setTimeout(r, base + Math.random()*base*0.5));
+}
+
+async function scanTarget(target, wordlist, opts){
+  log(`Baselining ${target} ...`);
+  const proxy = opts.proxy;
+  const bogus = `__nonexistent_${Math.random().toString(36).slice(2,10)}__`;
+  const baseRes = await timedFetch(buildUrl(target, bogus, proxy), opts.timeout);
+  const baseline = baseRes.ok ? { status: baseRes.status, length: baseRes.length, hash: simpleHash(baseRes.body) } : null;
+  if(baseline) log(`Baseline for ${target}: status ${baseline.status}, len ${baseline.length}`, 'sub');
+  else log(`Baseline fetch failed for ${target}: ${baseRes.error} (continuing — no proxy may mean opaque responses)`, 'warn');
+
+  const wait = await rateLimiter(opts.rps);
+  const queue = wordlist.slice(0, opts.maxpaths);
+  let idx = 0, active = 0;
+  const total = queue.length;
+
+  return new Promise(resolve => {
+    function maybeDone(){ if(idx>=total && active===0) resolve(); }
+    function next(){
+      if(!running){ resolve(); return; }
+      if(idx>=total){ maybeDone(); return; }
+      const path = queue[idx++]; active++;
+      (async ()=>{
+        await wait();
+        const url = buildUrl(target, path, proxy);
+        const res = await timedFetch(url, opts.timeout);
+        let r;
+        if(!res.ok){
+          r = { target, path, status:null, error:res.error, length:null, time:res.time,
+                via: proxy?'proxy':'direct', tech:[], live:false, softFiltered:false };
+        } else {
+          const h = simpleHash(res.body);
+          const softMatch = baseline && res.status===baseline.status &&
+            Math.abs(res.length - baseline.length) < 5 && h===baseline.hash;
+          const live = !softMatch && res.status>=200 && res.status<400;
+          r = { target, path, status:res.status, length:res.length, time:res.time,
+                via: proxy?'proxy':'direct (opaque-limited)',
+                tech: detectTech(res.headers, res.body),
+                live, softFiltered: !!softMatch };
+        }
+        addRow(r); updateStats();
+        barEl.style.width = Math.round((results.length/(total*targetsCountRef.n))*100) + '%';
+        active--;
+        next();
+      })();
+    }
+    for(let i=0;i<opts.conc;i++) next();
+  });
+}
+
+let targetsCountRef = {n:1};
+let uploadedWords = []; // merged, deduped lines from uploaded wordlist file(s)
+let uploadedFileNames = [];
+
+$('wordlistFile').addEventListener('change', async (e)=>{
+  const files = Array.from(e.target.files || []);
+  if(!files.length) return;
+  const statusEl = $('wordlistStatus');
+  statusEl.textContent = `Reading ${files.length} file(s)…`;
+  const sets = await Promise.all(files.map(f => f.text().then(txt => ({
+    name: f.name,
+    lines: txt.split(/\r?\n/).map(s=>s.trim()).filter(s=>s && !s.startsWith('#'))
+  }))));
+  const merged = new Set(uploadedWords);
+  for(const s of sets){ for(const l of s.lines) merged.add(l); uploadedFileNames.push(`${s.name} (${s.lines.length})`); }
+  uploadedWords = [...merged];
+  statusEl.textContent = `Loaded ${uploadedWords.length.toLocaleString()} unique paths from: ${uploadedFileNames.join(', ')}. These are merged with the textarea above and deduped at scan time.`;
+  log(`Wordlist file(s) loaded: ${uploadedWords.length.toLocaleString()} unique entries total.`, 'ok');
+});
+
+$('start').addEventListener('click', async ()=>{
+  const targets = $('targets').value.split('\n').map(normalizeTarget).filter(Boolean);
+  if(!targets.length){ log('No valid targets.', 'bad'); return; }
+  const manual = $('wordlist').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  let wordlist = [...new Set([...manual, ...uploadedWords])];
+  if($('recursive').checked) wordlist = [...new Set([...wordlist, ...EXTRA_API])];
+  const opts = {
+    proxy: $('proxy').value.trim(),
+    rps: Math.max(1, parseInt($('rps').value)||5),
+    conc: Math.max(1, parseInt($('conc').value)||4),
+    timeout: Math.max(1000, parseInt($('timeout').value)||6000),
+    maxpaths: Math.max(10, parseInt($('maxpaths').value)||150),
+  };
+  results = []; rowsEl.innerHTML=''; logEl.innerHTML=''; updateStats(); barEl.style.width='0%';
+  running = true; targetsCountRef.n = targets.length;
+  $('start').disabled = true; $('stop').disabled = false;
+  $('exportJson').disabled = true; $('exportCsv').disabled = true;
+  log(`Starting scan — ${targets.length} target(s), ${wordlist.length} paths each, ${opts.rps} rps, concurrency ${opts.conc}`);
+  for(const t of targets){
+    if(!running) break;
+    await scanTarget(t, wordlist, opts);
+  }
+  running = false;
+  log('Scan complete.', 'ok');
+  $('start').disabled = false; $('stop').disabled = true;
+  $('exportJson').disabled = false; $('exportCsv').disabled = false;
+});
+
+$('stop').addEventListener('click', ()=>{
+  running = false; log('Stopping…', 'warn');
+  $('stop').disabled = true;
+});
+
+async function doDownload(filename, data){
+  try{
+    const downloads = await claude.use('downloads');
+    if(downloads){ await downloads.save({filename, data}); return; }
+  }catch(e){}
+  // fallback: inline blob link (works in most non-sandboxed contexts)
+  const blob = new Blob([data], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+}
+
+$('exportJson').addEventListener('click', ()=>{
+  doDownload('endpoint-fuzzer-results.json', JSON.stringify(results, null, 2));
+});
+$('exportCsv').addEventListener('click', ()=>{
+  const headers = ['target','path','status','length','time','via','tech','live','softFiltered','error'];
+  const lines = [headers.join(',')];
+  for(const r of results){
+    lines.push(headers.map(h=>{
+      let v = r[h]; if(Array.isArray(v)) v = v.join('|');
+      v = (v===undefined||v===null) ? '' : String(v).replace(/"/g,'""');
+      return `"${v}"`;
+    }).join(','));
+  }
+  doDownload('endpoint-fuzzer-results.csv', lines.join('\n'));
+});
+</script>
+</body>
+</html>
