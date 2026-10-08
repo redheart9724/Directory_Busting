@@ -105,13 +105,14 @@ footer{text-align:center;color:var(--sub);font-size:0.75rem;margin-top:24px}
       machine (stdlib only, nothing to install — just Python 3, which ships on most Mac/Linux systems):
       <ol style="margin:8px 0 10px 18px;padding:0">
         <li>Open a terminal — <b>Terminal</b> on Mac, any terminal on Linux, or <b>Command Prompt / PowerShell</b> on Windows.</li>
+        <li>If one is already running from before, stop it first (click its terminal, press Ctrl+C) — the script below replaces it with a version that handles concurrent requests correctly.</li>
         <li>Click <b>Copy script</b> below, paste it into the terminal, and press Enter.</li>
         <li>Leave that terminal window open while you scan — it's your proxy, running at <code>http://localhost:8787</code>.</li>
         <li>Come back here, make sure the proxy field below says <code>http://localhost:8787/?url=</code>, and click <b>Test proxy</b>.</li>
       </ol>
       <button class="btn-ghost" id="copyScript" style="margin-bottom:6px">📋 Copy script</button>
       <pre id="proxyScript">python3 -c "
-import http.server, urllib.request, urllib.parse as up
+import http.server, socketserver, urllib.request, urllib.parse as up
 class H(http.server.BaseHTTPRequestHandler):
   def do_GET(self):
     t = up.parse_qs(up.urlparse(self.path).query).get('url',[None])[0]
@@ -126,10 +127,13 @@ class H(http.server.BaseHTTPRequestHandler):
     self.send_response(status)
     self.send_header('Access-Control-Allow-Origin','*'); self.send_header('Content-Type', ctype)
     self.end_headers(); self.wfile.write(body)
-http.server.HTTPServer(('localhost',8787), H).serve_forever()
+  def log_message(self, *a): pass
+class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    request_queue_size = 64
+ThreadingServer(('localhost',8787), H).serve_forever()
 "</pre>
-      <div class="hint">No Python handy? A Cloudflare Worker doing the same relay works too — same shape, just hosted;
-      only use that for public/non-sensitive targets, since the request then leaves your machine.</div>
+      <div class="hint">This version handles concurrent requests in parallel threads (the earlier one-line version only handled one request at a time, which is why a high Concurrency setting overwhelmed it). No Python handy? A Cloudflare Worker doing the same relay works too — same shape, just hosted; only use that for public/non-sensitive targets, since the request then leaves your machine.</div>
     </div>
   </div>
 
@@ -157,8 +161,8 @@ http.server.HTTPServer(('localhost',8787), H).serve_forever()
 
     <div class="card">
       <div class="row">
-        <div><label>Requests / sec</label><input id="rps" type="number" value="5" min="1" max="30"></div>
-        <div><label>Concurrency</label><input id="conc" type="number" value="4" min="1" max="12"></div>
+        <div><label>Requests / sec (hard-capped at 30)</label><input id="rps" type="number" value="5" min="1" max="30"></div>
+        <div><label>Concurrency (hard-capped at 20)</label><input id="conc" type="number" value="4" min="1" max="20"></div>
         <div><label>Timeout (ms)</label><input id="timeout" type="number" value="6000" min="1000" max="20000"></div>
       </div>
       <label><input id="recursive" type="checkbox" style="width:auto;display:inline-block;margin-right:6px">Also probe common API/discovery files (swagger.json, robots.txt, sitemap.xml, .env, .git/config)</label>
@@ -331,7 +335,7 @@ function buildUrl(target, path, proxy){
   return proxy ? (proxy + encodeURIComponent(full)) : full;
 }
 
-async function timedFetch(url, timeoutMs){
+async function timedFetch(url, timeoutMs, viaProxy){
   const ac = new AbortController();
   const to = setTimeout(()=>ac.abort(), timeoutMs);
   const t0 = performance.now();
@@ -343,13 +347,22 @@ async function timedFetch(url, timeoutMs){
       headers: res.headers, time: Math.round(performance.now()-t0) };
   }catch(e){
     clearTimeout(to);
-    // A generic TypeError here almost always means the browser's CORS policy blocked the
-    // read (no Access-Control-Allow-Origin from the target) — not a dead target. Label it
-    // as such instead of surfacing the raw, misleading "NetworkError" text.
-    const isCors = e.name === 'TypeError';
-    return { ok:false, corsBlocked:isCors,
-      error: e.name === 'AbortError' ? 'timeout' : (isCors ? 'CORS-blocked (needs proxy)' : (e.message||'unreachable')),
-      time: Math.round(performance.now()-t0) };
+    const elapsed = Math.round(performance.now()-t0);
+    if(e.name === 'AbortError'){
+      return { ok:false, corsBlocked:false, proxyFail:!!viaProxy, error:'timeout', time: elapsed };
+    }
+    // A generic TypeError here means either the target's CORS policy blocked the read
+    // (no proxy involved) or, if a proxy IS configured, the proxy itself refused/dropped the
+    // connection (down, crashed, or overloaded by too many concurrent requests) — these have
+    // very different fixes, so don't conflate them.
+    if(e.name === 'TypeError'){
+      if(viaProxy){
+        return { ok:false, corsBlocked:false, proxyFail:true,
+          error:'proxy connection failed (overloaded, or not running)', time: elapsed };
+      }
+      return { ok:false, corsBlocked:true, proxyFail:false, error:'CORS-blocked (needs proxy)', time: elapsed };
+    }
+    return { ok:false, corsBlocked:false, proxyFail:!!viaProxy, error: e.message||'unreachable', time: elapsed };
   }
 }
 
@@ -504,7 +517,7 @@ async function scanTarget(target, wordlist, opts){
   log(`Baselining ${target} ...`);
   const proxy = opts.proxy;
   const bogus = `__nonexistent_${Math.random().toString(36).slice(2,10)}__`;
-  const baseRes = await timedFetch(buildUrl(target, bogus, proxy), opts.timeout);
+  const baseRes = await timedFetch(buildUrl(target, bogus, proxy), opts.timeout, !!proxy);
   const baseline = baseRes.ok ? { status: baseRes.status, length: baseRes.length, hash: simpleHash(baseRes.body) } : null;
 
   if(baseline){
@@ -513,14 +526,18 @@ async function scanTarget(target, wordlist, opts){
     log(`${target} blocked the baseline request via CORS — direct, proxy-less scanning cannot read status codes from this target.`, 'bad');
     setCorsBannerOpen(true);
     return; // don't burn the whole wordlist on guaranteed failures
+  } else if(baseRes.proxyFail){
+    log(`Baseline request through the proxy failed (${baseRes.error}). Check the proxy's terminal window is still running, then lower Concurrency and retry.`, 'bad');
+    return; // proxy isn't answering — no point hammering it with the full wordlist
   } else {
     log(`Baseline fetch failed for ${target}: ${baseRes.error}`, 'warn');
   }
 
   const wait = await rateLimiter(opts.rps);
   const queue = wordlist.slice(0, opts.maxpaths);
-  let idx = 0, active = 0, corsStreak = 0, stoppedForCors = false;
+  let idx = 0, active = 0, corsStreak = 0, proxyFailStreak = 0, stoppedForCors = false;
   const total = queue.length;
+  const PROXY_FAIL_STOP_THRESHOLD = 10;
 
   return new Promise(resolve => {
     function maybeDone(){ if((idx>=total && active===0) || stoppedForCors){ resolve(); } }
@@ -531,16 +548,21 @@ async function scanTarget(target, wordlist, opts){
       (async ()=>{
         await wait();
         const url = buildUrl(target, path, proxy);
-        const res = await timedFetch(url, opts.timeout);
+        const res = await timedFetch(url, opts.timeout, !!proxy);
         let r;
         if(!res.ok){
           corsStreak = res.corsBlocked ? corsStreak+1 : 0;
+          proxyFailStreak = res.proxyFail ? proxyFailStreak+1 : 0;
           r = { target, path, status:null, error:res.error, length:null, time:res.time,
                 via: proxy?'proxy':'direct', tech:[], live:false, softFiltered:false };
           if(!proxy && corsStreak>=CORS_STOP_THRESHOLD && !stoppedForCors){
             stoppedForCors = true;
             log(`${target}: ${CORS_STOP_THRESHOLD} consecutive CORS blocks — stopping this target early instead of looping through the rest of the list. Add a proxy to get real results.`, 'bad');
             setCorsBannerOpen(true);
+          }
+          if(proxy && proxyFailStreak>=PROXY_FAIL_STOP_THRESHOLD && !stoppedForCors){
+            stoppedForCors = true;
+            log(`${target}: ${PROXY_FAIL_STOP_THRESHOLD} consecutive proxy failures — the local proxy can't keep up (or crashed). Stopping early. Lower Concurrency, confirm the proxy's terminal is still running, and restart the scan.`, 'bad');
           }
         } else {
           corsStreak = 0;
@@ -603,7 +625,7 @@ $('testProxy').addEventListener('click', async ()=>{
   const out = $('proxyTestResult');
   if(!proxy){ out.textContent = 'Enter a proxy URL first.'; out.style.color = 'var(--bad)'; return; }
   out.textContent = 'Testing…'; out.style.color = 'var(--sub)';
-  const res = await timedFetch(buildUrl('https://example.com', '', proxy), 8000);
+  const res = await timedFetch(buildUrl('https://example.com', '', proxy), 8000, true);
   if(res.ok && res.status){
     out.textContent = `✓ Proxy is working — got a real status code (${res.status}) back through it. You're good to scan.`;
     out.style.color = 'var(--ok)';
@@ -620,13 +642,17 @@ $('start').addEventListener('click', async ()=>{
   const manual = $('wordlist').value.split('\n').map(s=>s.trim()).filter(Boolean);
   let wordlist = [...new Set([...BUILT_IN_WORDLIST, ...manual, ...uploadedWords])];
   if($('recursive').checked) wordlist = [...new Set([...wordlist, ...EXTRA_API])];
+  const rawRps = parseInt($('rps').value)||5, rawConc = parseInt($('conc').value)||4;
   const opts = {
     proxy: $('proxy').value.trim(),
-    rps: Math.max(1, parseInt($('rps').value)||5),
-    conc: Math.max(1, parseInt($('conc').value)||4),
+    rps: Math.min(30, Math.max(1, rawRps)),
+    conc: Math.min(20, Math.max(1, rawConc)),
     timeout: Math.max(1000, parseInt($('timeout').value)||6000),
     maxpaths: Math.max(10, parseInt($('maxpaths').value)||150),
   };
+  if(rawRps !== opts.rps || rawConc !== opts.conc){
+    $('rps').value = opts.rps; $('conc').value = opts.conc;
+  }
   results = []; rowsEl.innerHTML=''; logEl.innerHTML=''; updateStats(); barEl.style.width='0%';
   errorCollapseCount = {}; setCorsBannerOpen(false);
   running = true; targetsCountRef.n = targets.length;
